@@ -253,7 +253,15 @@ class PPOTrainer(BaseRLTrainer):
             next_value, ppo_cfg.use_gae, ppo_cfg.gamma, ppo_cfg.tau
         )
 
-        value_loss, action_loss, dist_entropy = self.agent.update(rollouts)
+        value_loss, action_loss, dist_entropy, query_loss = self.agent.update(rollouts)
+
+        if (
+            rollout_hidden_state.ndim == 4
+            and rollout_hidden_state.size(0) > ppo_cfg.num_steps
+        ):
+            rollout_hidden_state = rollout_hidden_state[-ppo_cfg.num_steps :]
+
+        rollouts.recurrent_hidden_states = rollout_hidden_state
 
         rollouts.after_update()
 
@@ -262,6 +270,7 @@ class PPOTrainer(BaseRLTrainer):
             value_loss,
             action_loss,
             dist_entropy,
+            query_loss,
         )
 
     def train(self) -> None:

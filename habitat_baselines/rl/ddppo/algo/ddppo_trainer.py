@@ -25,6 +25,7 @@ from habitat_baselines.common.environments import get_env_class
 from habitat_baselines.common.rollout_storage import RolloutStorage
 from habitat_baselines.common.tensorboard_utils import TensorboardWriter
 from habitat_baselines.common.utils import batch_obs, linear_decay
+from habitat_baselines.rl.aux_losses import AuxLosses
 from habitat_baselines.rl.ddppo.algo.ddp_utils import (
     EXIT,
     REQUEUE,
@@ -349,6 +350,7 @@ class DDPPOTrainer(PPOTrainer):
                     value_loss,
                     action_loss,
                     dist_entropy,
+                    aux_loss,
                 ) = self._update_agent(ppo_cfg, rollouts)
                 pth_time += delta_pth_time
 
@@ -362,7 +364,15 @@ class DDPPOTrainer(PPOTrainer):
                     window_episode_stats[k].append(stats[i].clone())
 
                 stats = torch.tensor(
-                    [value_loss, action_loss, count_steps_delta],
+                    [
+                        value_loss,
+                        action_loss,
+                        aux_loss,
+                        AuxLosses.get_loss("egomotion_error"),
+                        AuxLosses.get_loss("information"),
+                        0.1 * dist_entropy,
+                        count_steps_delta,
+                    ],
                     device=self.device,
                 )
                 distrib.all_reduce(stats)
@@ -403,7 +413,7 @@ class DDPPOTrainer(PPOTrainer):
 
                     writer.add_scalars(
                         "losses",
-                        {k: l for l, k in zip(losses, ["value", "policy"])},
+                        {k: l for l, k in zip(losses, ["value", "policy", "aux", "egomotion_error", "information", "entropy"])},
                         count_steps,
                     )
 
