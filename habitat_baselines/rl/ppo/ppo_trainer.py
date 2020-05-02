@@ -156,14 +156,7 @@ class PPOTrainer(BaseRLTrainer):
         return results
 
     def _collect_rollout_step(
-        self,
-        rollouts,
-        rollout_hidden_state,
-        current_episode_reward,
-        episode_rewards,
-        episode_counts,
-        episode_spls,
-        episode_successes,
+        self, rollouts, current_episode_reward, running_episode_stats
     ):
         pth_time = 0.0
         env_time = 0.0
@@ -179,24 +172,13 @@ class PPOTrainer(BaseRLTrainer):
                 values,
                 actions,
                 actions_log_probs,
-                rollout_hidden_state,
+                recurrent_hidden_states,
             ) = self.actor_critic.act(
                 step_observation,
-                rollout_hidden_state,
+                rollouts.recurrent_hidden_states[rollouts.step],
                 rollouts.prev_actions[rollouts.step],
                 rollouts.masks[rollouts.step],
             )
-
-            if rollout_hidden_state.ndim == 4:
-                last_zero = rollout_hidden_state.size(0)
-                for i in range(rollout_hidden_state.size(1)):
-                    nz = (rollout_hidden_state[:, i, -1, 0] == 0.0).nonzero()
-                    if nz.numel() == 0:
-                        last_zero = 1
-                    else:
-                        last_zero = min(last_zero, nz.max().item())
-
-                rollout_hidden_state = rollout_hidden_state[last_zero - 1 :]
 
         pth_time += time.time() - t_sample_action
 
@@ -210,50 +192,52 @@ class PPOTrainer(BaseRLTrainer):
         t_update_stats = time.time()
         batch = batch_obs(observations, device=self.device)
         rewards = torch.tensor(
-            rewards, dtype=torch.float, device=episode_rewards.device
+            rewards, dtype=torch.float, device=current_episode_reward.device
         )
         rewards = rewards.unsqueeze(1)
 
         masks = torch.tensor(
             [[0.0] if done else [1.0] for done in dones],
             dtype=torch.float,
-            device=episode_rewards.device,
+            device=current_episode_reward.device,
         )
 
-        current_episode_reward.copy_(
-            current_episode_reward * self.config.RL.PPO.gamma + rewards
-        )
-        self.agent.reward_whitten.update(current_episode_reward)
-        episode_rewards += (1 - masks) * current_episode_reward
-        episode_counts += 1 - masks
+        current_episode_reward += rewards
+        running_episode_stats["reward"] += (1 - masks) * current_episode_reward
+        running_episode_stats["count"] += 1 - masks
+        for k, v in self._extract_scalars_from_infos(infos).items():
+            v = torch.tensor(
+                v, dtype=torch.float, device=current_episode_reward.device
+            ).unsqueeze(1)
+            if k not in running_episode_stats:
+                running_episode_stats[k] = torch.zeros_like(
+                    running_episode_stats["count"]
+                )
+
+            running_episode_stats[k] += (1 - masks) * v
+
         current_episode_reward *= masks
 
-        spl = torch.tensor(
-            [[info["spl"]] for info in infos], device=self.device, dtype=torch.float
-        )
-        episode_spls += spl
-        episode_successes += (spl > 0).float()
-
         if self._static_encoder:
-            batch["prev_visual_features"] = step_observation["visual_features"]
-            batch["visual_features"] = self._encoder(batch)
+            with torch.no_grad():
+                batch["prev_visual_features"] = step_observation["visual_features"]
+                batch["visual_features"] = self._encoder(batch)
 
-        rewards = torch.clamp(
-            rewards
-            / torch.max(
-                self.agent.reward_whitten.stdev,
-                torch.tensor(1.0, device=rewards.device),
-            ),
-            -5.0,
-            5.0,
+        rollouts.insert(
+            batch,
+            recurrent_hidden_states,
+            actions,
+            actions_log_probs,
+            values,
+            rewards,
+            masks,
         )
-        rollouts.insert(batch, actions, actions_log_probs, values, rewards, masks)
 
         pth_time += time.time() - t_update_stats
 
-        return pth_time, env_time, self.envs.num_envs, rollout_hidden_state
+        return pth_time, env_time, self.envs.num_envs
 
-    def _update_agent(self, ppo_cfg, rollouts, rollout_hidden_state):
+    def _update_agent(self, ppo_cfg, rollouts):
         t_update_model = time.time()
         with torch.no_grad():
             last_observation = {
@@ -261,7 +245,7 @@ class PPOTrainer(BaseRLTrainer):
             }
             next_value = self.actor_critic.get_value(
                 last_observation,
-                rollout_hidden_state,
+                rollouts.recurrent_hidden_states[rollouts.step],
                 rollouts.prev_actions[rollouts.step],
                 rollouts.masks[rollouts.step],
             ).detach()
@@ -272,16 +256,7 @@ class PPOTrainer(BaseRLTrainer):
 
         value_loss, action_loss, dist_entropy, query_loss = self.agent.update(rollouts)
 
-        if (
-            rollout_hidden_state.ndim == 4
-            and rollout_hidden_state.size(0) > ppo_cfg.num_steps
-        ):
-            rollout_hidden_state = rollout_hidden_state[-ppo_cfg.num_steps :]
-
-        rollouts.recurrent_hidden_states = rollout_hidden_state
-
         rollouts.after_update()
-        self.agent.reward_whitten.sync()
 
         return (
             time.time() - t_update_model,
@@ -297,7 +272,9 @@ class PPOTrainer(BaseRLTrainer):
             None
         """
 
-        self.envs = construct_envs(self.config, get_env_class(self.config.ENV_NAME))
+        self.envs = construct_envs(
+            self.config, get_env_class(self.config.ENV_NAME)
+        )
 
         ppo_cfg = self.config.RL.PPO
         self.device = (
@@ -324,7 +301,7 @@ class PPOTrainer(BaseRLTrainer):
         rollouts.to(self.device)
 
         observations = self.envs.reset()
-        batch = batch_obs(observations)
+        batch = batch_obs(observations, device=self.device)
 
         for sensor in rollouts.observations:
             rollouts.observations[sensor][0].copy_(batch[sensor])
@@ -335,11 +312,14 @@ class PPOTrainer(BaseRLTrainer):
         batch = None
         observations = None
 
-        episode_rewards = torch.zeros(self.envs.num_envs, 1)
-        episode_counts = torch.zeros(self.envs.num_envs, 1)
         current_episode_reward = torch.zeros(self.envs.num_envs, 1)
-        window_episode_reward = deque(maxlen=ppo_cfg.reward_window_size)
-        window_episode_counts = deque(maxlen=ppo_cfg.reward_window_size)
+        running_episode_stats = dict(
+            count=torch.zeros(self.envs.num_envs, 1),
+            reward=torch.zeros(self.envs.num_envs, 1),
+        )
+        window_episode_stats = defaultdict(
+            lambda: deque(maxlen=ppo_cfg.reward_window_size)
+        )
 
         t_start = time.time()
         env_time = 0
@@ -352,7 +332,6 @@ class PPOTrainer(BaseRLTrainer):
             lr_lambda=lambda x: linear_decay(x, self.config.NUM_UPDATES),
         )
 
-        self.save_checkpoint(f"ckpt.{count_checkpoints}.pth", dict(step=0))
         with TensorboardWriter(
             self.config.TENSORBOARD_DIR, flush_secs=self.flush_secs
         ) as writer:
@@ -365,19 +344,13 @@ class PPOTrainer(BaseRLTrainer):
                         update, self.config.NUM_UPDATES
                     )
 
-                rollout_hidden_state = rollouts.recurrent_hidden_states.detach().clone()
                 for step in range(ppo_cfg.num_steps):
                     (
                         delta_pth_time,
                         delta_env_time,
                         delta_steps,
-                        rollout_hidden_state,
                     ) = self._collect_rollout_step(
-                        rollouts,
-                        rollout_hidden_state,
-                        current_episode_reward,
-                        episode_rewards,
-                        episode_counts,
+                        rollouts, current_episode_reward, running_episode_stats
                     )
                     pth_time += delta_pth_time
                     env_time += delta_env_time
@@ -388,21 +361,19 @@ class PPOTrainer(BaseRLTrainer):
                     value_loss,
                     action_loss,
                     dist_entropy,
-                ) = self._update_agent(ppo_cfg, rollouts, rollout_hidden_state)
+                ) = self._update_agent(ppo_cfg, rollouts)
                 pth_time += delta_pth_time
 
-                window_episode_reward.append(episode_rewards.clone())
-                window_episode_counts.append(episode_counts.clone())
+                for k, v in running_episode_stats.items():
+                    window_episode_stats[k].append(v.clone())
 
-                losses = [value_loss, action_loss]
-                stats = zip(
-                    ["count", "reward"], [window_episode_counts, window_episode_reward]
-                )
                 deltas = {
                     k: (
-                        (v[-1] - v[0]).sum().item() if len(v) > 1 else v[0].sum().item()
+                        (v[-1] - v[0]).sum().item()
+                        if len(v) > 1
+                        else v[0].sum().item()
                     )
-                    for k, v in stats
+                    for k, v in window_episode_stats.items()
                 }
                 deltas["count"] = max(deltas["count"], 1.0)
 
@@ -410,6 +381,17 @@ class PPOTrainer(BaseRLTrainer):
                     "reward", deltas["reward"] / deltas["count"], count_steps
                 )
 
+                # Check to see if there are any metrics
+                # that haven't been logged yet
+                metrics = {
+                    k: v / deltas["count"]
+                    for k, v in deltas.items()
+                    if k not in {"reward", "count"}
+                }
+                if len(metrics) > 0:
+                    writer.add_scalars("metrics", metrics, count_steps)
+
+                losses = [value_loss, action_loss]
                 writer.add_scalars(
                     "losses",
                     {k: l for l, k in zip(losses, ["value", "policy"])},
@@ -426,25 +408,21 @@ class PPOTrainer(BaseRLTrainer):
 
                     logger.info(
                         "update: {}\tenv-time: {:.3f}s\tpth-time: {:.3f}s\t"
-                        "frames: {}".format(update, env_time, pth_time, count_steps)
+                        "frames: {}".format(
+                            update, env_time, pth_time, count_steps
+                        )
                     )
 
-                    window_rewards = (
-                        window_episode_reward[-1] - window_episode_reward[0]
-                    ).sum()
-                    window_counts = (
-                        window_episode_counts[-1] - window_episode_counts[0]
-                    ).sum()
-
-                    if window_counts > 0:
-                        logger.info(
-                            "Average window size {} reward: {:3f}".format(
-                                len(window_episode_reward),
-                                (window_rewards / window_counts).item(),
-                            )
+                    logger.info(
+                        "Average window size: {}  {}".format(
+                            len(window_episode_stats["count"]),
+                            "  ".join(
+                                "{}: {:.3f}".format(k, v / deltas["count"])
+                                for k, v in deltas.items()
+                                if k != "count"
+                            ),
                         )
-                    else:
-                        logger.info("No episodes finish in current window")
+                    )
 
                 # checkpoint model
                 if update % self.config.CHECKPOINT_INTERVAL == 0:

@@ -244,12 +244,6 @@ class DDPPOTrainer(PPOTrainer):
         batch = None
         observations = None
 
-        episode_rewards = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        episode_counts = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        current_episode_reward = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        episode_spls = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        episode_successes = torch.zeros(self.envs.num_envs, 1, device=self.device)
-
         current_episode_reward = torch.zeros(
             self.envs.num_envs, 1, device=self.device
         )
@@ -334,22 +328,14 @@ class DDPPOTrainer(PPOTrainer):
                 count_steps_delta = 0
                 self.agent.eval()
                 
-                rollout_hidden_state = rollouts.recurrent_hidden_states.detach().clone()
                 for step in range(ppo_cfg.num_steps):
 
                     (
                         delta_pth_time,
                         delta_env_time,
                         delta_steps,
-                        rollout_hidden_state,
                     ) = self._collect_rollout_step(
-                        rollouts,
-                        rollout_hidden_state,
-                        current_episode_reward,
-                        episode_rewards,
-                        episode_counts,
-                        episode_spls,
-                        episode_successes,
+                        rollouts, current_episode_reward, running_episode_stats
                     )
                     pth_time += delta_pth_time
                     env_time += delta_env_time
@@ -377,7 +363,7 @@ class DDPPOTrainer(PPOTrainer):
                     action_loss,
                     dist_entropy,
                     aux_loss,
-                ) = self._update_agent(ppo_cfg, rollouts, rollout_hidden_state)
+                ) = self._update_agent(ppo_cfg, rollouts)
                 pth_time += delta_pth_time
 
                 stats_ordering = list(sorted(running_episode_stats.keys()))
@@ -402,7 +388,7 @@ class DDPPOTrainer(PPOTrainer):
                     device=self.device,
                 )
                 distrib.all_reduce(stats)
-                count_steps += stats[2].item()
+                count_steps += stats[-1].item()
 
                 if self.world_rank == 0:
                     num_rollouts_done_store.set("num_done", "0")
@@ -420,6 +406,8 @@ class DDPPOTrainer(PPOTrainer):
                         for k, v in window_episode_stats.items()
                     }
                     deltas["count"] = max(deltas["count"], 1.0)
+
+                    print(deltas["reward"])
 
                     writer.add_scalar(
                         "reward",
