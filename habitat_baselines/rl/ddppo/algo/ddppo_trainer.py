@@ -212,11 +212,18 @@ class DDPPOTrainer(PPOTrainer):
                         shape=self._encoder.output_shape,
                         dtype=np.float32,
                     ),
+                     "prev_visual_features": spaces.Box(
+                        low=np.iinfo(np.uint32).min,
+                        high=np.iinfo(np.uint32).max,
+                        shape=self._encoder.output_shape,
+                        dtype=np.float32,
+                    ),
                     **obs_space.spaces,
                 }
             )
             with torch.no_grad():
                 batch["visual_features"] = self._encoder(batch)
+                batch["prev_visual_features"] = torch.zeros_like(batch["visual_features"])
 
         rollouts = RolloutStorage(
             ppo_cfg.num_steps,
@@ -236,6 +243,12 @@ class DDPPOTrainer(PPOTrainer):
         # they will be kept in memory for the entire duration of training!
         batch = None
         observations = None
+
+        episode_rewards = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        episode_counts = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_reward = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        episode_spls = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        episode_successes = torch.zeros(self.envs.num_envs, 1, device=self.device)
 
         current_episode_reward = torch.zeros(
             self.envs.num_envs, 1, device=self.device
@@ -320,14 +333,23 @@ class DDPPOTrainer(PPOTrainer):
 
                 count_steps_delta = 0
                 self.agent.eval()
+                
+                rollout_hidden_state = rollouts.recurrent_hidden_states.detach().clone()
                 for step in range(ppo_cfg.num_steps):
 
                     (
                         delta_pth_time,
                         delta_env_time,
                         delta_steps,
+                        rollout_hidden_state,
                     ) = self._collect_rollout_step(
-                        rollouts, current_episode_reward, running_episode_stats
+                        rollouts,
+                        rollout_hidden_state,
+                        current_episode_reward,
+                        episode_rewards,
+                        episode_counts,
+                        episode_spls,
+                        episode_successes,
                     )
                     pth_time += delta_pth_time
                     env_time += delta_env_time
@@ -355,7 +377,7 @@ class DDPPOTrainer(PPOTrainer):
                     action_loss,
                     dist_entropy,
                     aux_loss,
-                ) = self._update_agent(ppo_cfg, rollouts)
+                ) = self._update_agent(ppo_cfg, rollouts, rollout_hidden_state)
                 pth_time += delta_pth_time
 
                 stats_ordering = list(sorted(running_episode_stats.keys()))

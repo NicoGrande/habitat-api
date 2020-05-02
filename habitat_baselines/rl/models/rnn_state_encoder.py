@@ -11,9 +11,7 @@ class RNNStateEncoder(nn.Module):
         rnn_type: str = "GRU",
     ):
         r"""An RNN for encoding the state in RL.
-
         Supports masking the hidden state during various timesteps in the forward lass
-
         Args:
             input_size: The input size of the RNN
             hidden_size: The hidden size
@@ -23,34 +21,39 @@ class RNNStateEncoder(nn.Module):
 
         super().__init__()
         self._num_recurrent_layers = num_layers
-        self._rnn_type = rnn_type
 
-        self.rnn = getattr(nn, rnn_type)(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-        )
+        if isinstance(rnn_type, str):
+            self._rnn_type = rnn_type
+            self.rnn = getattr(nn, rnn_type)(
+                input_size=input_size, hidden_size=hidden_size, num_layers=num_layers
+            )
+        else:
+            self._rnn_type = "other"
+            self.rnn = torch.jit.script(
+                rnn_type(
+                    input_size=input_size,
+                    hidden_size=hidden_size,
+                    num_layers=num_layers,
+                )
+            )
 
         self.layer_init()
 
     def layer_init(self):
         for name, param in self.rnn.named_parameters():
             if "weight" in name:
-                nn.init.orthogonal_(param)
+                if len(param.size()) > 1:
+                    nn.init.orthogonal_(param)
             elif "bias" in name:
                 nn.init.constant_(param, 0)
 
     @property
     def num_recurrent_layers(self):
-        return self._num_recurrent_layers * (
-            2 if "LSTM" in self._rnn_type else 1
-        )
+        return self._num_recurrent_layers * (2 if "LSTM" in self._rnn_type else 1)
 
     def _pack_hidden(self, hidden_states):
         if "LSTM" in self._rnn_type:
-            hidden_states = torch.cat(
-                [hidden_states[0], hidden_states[1]], dim=0
-            )
+            hidden_states = torch.cat([hidden_states[0], hidden_states[1]], dim=0)
 
         return hidden_states
 
@@ -71,13 +74,20 @@ class RNNStateEncoder(nn.Module):
 
         return hidden_states
 
+    def initial_hidden(self, bsz):
+        return torch.zeros(
+            self.num_recurrent_layers,
+            bsz,
+            self.rnn.hidden_size,
+            device=next(self.parameters()).device,
+        )
+
     def single_forward(self, x, hidden_states, masks):
         r"""Forward for a non-sequence input
         """
         hidden_states = self._unpack_hidden(hidden_states)
         x, hidden_states = self.rnn(
-            x.unsqueeze(0),
-            self._mask_hidden(hidden_states, masks.unsqueeze(0)),
+            x.unsqueeze(0), self._mask_hidden(hidden_states, masks.unsqueeze(0))
         )
         x = x.squeeze(0)
         hidden_states = self._pack_hidden(hidden_states)
@@ -85,7 +95,6 @@ class RNNStateEncoder(nn.Module):
 
     def seq_forward(self, x, hidden_states, masks):
         r"""Forward for a sequence of length T
-
         Args:
             x: (T, N, -1) Tensor that has been flattened to (T * N, -1)
             hidden_states: The starting hidden state.
@@ -122,9 +131,7 @@ class RNNStateEncoder(nn.Module):
 
             rnn_scores, hidden_states = self.rnn(
                 x[start_idx:end_idx],
-                self._mask_hidden(
-                    hidden_states, masks[start_idx].view(1, -1, 1)
-                ),
+                self._mask_hidden(hidden_states, masks[start_idx].view(1, -1, 1)),
             )
 
             outputs.append(rnn_scores)
@@ -136,7 +143,8 @@ class RNNStateEncoder(nn.Module):
         hidden_states = self._pack_hidden(hidden_states)
         return x, hidden_states
 
-    def forward(self, x, hidden_states, masks):
+    def forward(self, x, context, hidden_states, masks):
+        x = x + context
         if x.size(0) == hidden_states.size(1):
             return self.single_forward(x, hidden_states, masks)
         else:

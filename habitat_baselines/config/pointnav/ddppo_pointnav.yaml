@@ -1,4 +1,4 @@
-BASE_TASK_CONFIG_PATH: "configs/tasks/pointnav_gibson.yaml"
+BASE_TASK_CONFIG_PATH: "configs/tasks/challenge_pointnav2020.local.rgbd.yaml"
 TRAINER_NAME: "ddppo"
 ENV_NAME: "NavRLEnv"
 SIMULATOR_GPU_ID: 0
@@ -51,7 +51,7 @@ RL:
     # The PyTorch distributed backend to use
     distrib_backend: NCCL
     # Visual encoder backbone
-    pretrained_weights: data/ddppo-models/gibson-2plus-resnet18-depth.pth
+    pretrained_weights: data/ddppo-models/rs18-pointnav-v2-depth.pth
     # Initialize with pretrained weights
     pretrained: False
     # Initialize just the visual encoder backbone with pretrained weights
