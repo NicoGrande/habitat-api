@@ -617,8 +617,7 @@ class PointNavResNetNet(Net):
 
         context_emb = prev_actions + self._tgt_proj(observations["pointgoal"])
         x, rnn_hidden_states = self.state_encoder(
-            torch.cat([visual_emb, flow_emb], dim=-1),
-            context_emb,
+            torch.cat([visual_emb, flow_emb], dim=-1) + context_emb,
             rnn_hidden_states,
             masks,
         )

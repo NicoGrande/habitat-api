@@ -73,6 +73,10 @@ class DDPPOTrainer(PPOTrainer):
         self.actor_critic = PointNavResNetPolicy(
             observation_space=self.envs.observation_spaces[0],
             action_space=self.envs.action_spaces[0],
+            final_beta=ppo_cfg.final_beta,
+            start_beta=ppo_cfg.start_beta,
+            beta_decay_steps=ppo_cfg.beta_decay_steps,
+            decay_start_step=ppo_cfg.decay_start_step,
             hidden_size=ppo_cfg.hidden_size,
             rnn_type=self.config.RL.DDPPO.rnn_type,
             num_recurrent_layers=self.config.RL.DDPPO.num_recurrent_layers,

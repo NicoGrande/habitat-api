@@ -1,65 +1,130 @@
-#!/usr/bin/env python3
-
-# Copyright (c) Facebook, Inc. and its affiliates.
-# This source code is licensed under the MIT license found in the
-# LICENSE file in the root directory of this source tree.
-
+import numpy as np
 import torch
 import torch.distributed as distrib
 import torch.nn as nn
 import torch.nn.functional as F
 
 
+@torch.jit.script
+def update_mean_var_count_from_moments(
+    mean, var, count, batch_mean, batch_var, batch_count
+):
+    delta = batch_mean - mean
+    tot_count = count + batch_count
+
+    m_a = var * count
+    m_b = batch_var * batch_count
+    M2 = m_a + m_b + delta.pow(2) * count * batch_count / tot_count
+
+    mean = mean + delta * batch_count / tot_count
+    var = M2 / tot_count
+    count = tot_count
+
+    return mean, var, count
+
+
 class RunningMeanAndVar(nn.Module):
+    def __init__(self, shape):
+        super().__init__()
+        self.register_buffer("_mean", torch.zeros(1, *shape))
+        self.register_buffer("_var", torch.zeros(1, *shape))
+        self.register_buffer("_count", torch.full((), 0.0))
+        self._shape = shape
+
+        self._x_buffer = []
+
+    def update(self, x):
+        if distrib.is_initialized():
+            self._x_buffer.append(x.clone())
+        else:
+            self._update(x)
+
+    def _update(self, x):
+        batch_mean = x.sum(0, keepdim=True)
+        batch_count = torch.full_like(self._count, x.size(0))
+
+        if distrib.is_initialized():
+            shape = batch_mean.size()
+            n = np.prod(shape)
+            tmp = torch.cat([batch_mean.view(-1), batch_count.view(-1)])
+            distrib.all_reduce(tmp)
+
+            batch_mean = tmp[0:n].view(shape)
+            batch_count = tmp[n]
+
+        batch_mean = batch_mean / batch_count
+
+        batch_var = (x - batch_mean).pow(2).sum(0, keepdim=True)
+        if distrib.is_initialized():
+            distrib.all_reduce(batch_var)
+
+        batch_var = batch_var / batch_count
+
+        self._mean, self._var, self._count = update_mean_var_count_from_moments(
+            self._mean, self._var, self._count, batch_mean, batch_var, batch_count
+        )
+
+    @property
+    def stdev(self):
+        return torch.sqrt(
+            torch.max(
+                self._var,
+                torch.tensor(1e-4, device=self._var.device, dtype=self._var.dtype),
+            )
+        )
+
+    def sync(self):
+        if distrib.is_initialized():
+            x = torch.cat(self._x_buffer, 0)
+            self._update(x)
+
+            self._x_buffer = []
+
+
+class ImageAutoRunningMeanAndVar(nn.Module):
     def __init__(self, n_channels):
         super().__init__()
         self.register_buffer("_mean", torch.zeros(1, n_channels, 1, 1))
         self.register_buffer("_var", torch.zeros(1, n_channels, 1, 1))
-        self.register_buffer("_count", torch.zeros(()))
+        self.register_buffer("_count", torch.full((), 0.0))
 
-        self._distributed = distrib.is_initialized()
-
-    def forward(self, x):
+    def update(self, x):
         if self.training:
-            new_mean = F.adaptive_avg_pool2d(x, 1).sum(0, keepdim=True)
-            new_count = torch.full_like(self._count, x.size(0))
+            batch_mean = F.adaptive_avg_pool2d(x, 1).mean(0, keepdim=True)
+            batch_count = torch.full_like(
+                self._count, x.size(0) * x.size(2) * x.size(3)
+            )
 
-            if self._distributed:
-                distrib.all_reduce(new_mean)
-                distrib.all_reduce(new_count)
+            if distrib.is_initialized():
+                shape = batch_mean.size()
+                n = np.prod(shape)
+                tmp = torch.cat([batch_mean.view(-1), batch_count.view(-1)])
+                distrib.all_reduce(tmp)
 
-            new_mean /= new_count
+                batch_mean = tmp[0:n].view(shape) / distrib.get_world_size()
+                batch_count = tmp[n]
 
-            new_var = F.adaptive_avg_pool2d((x - new_mean).pow(2), 1).sum(
+            batch_var = F.adaptive_avg_pool2d((x - batch_mean).pow(2), 1).mean(
                 0, keepdim=True
             )
+            if distrib.is_initialized():
+                distrib.all_reduce(batch_var)
+                batch_var = batch_var / distrib.get_world_size()
 
-            if self._distributed:
-                distrib.all_reduce(new_var)
-
-            # No - 1 on all the variance as the number of pixels
-            # seen over training is simply absurd, so it doesn't matter
-            new_var /= new_count
-
-            m_a = self._var * (self._count)
-            m_b = new_var * (new_count)
-            M2 = (
-                m_a
-                + m_b
-                + (new_mean - self._mean).pow(2)
-                * self._count
-                * new_count
-                / (self._count + new_count)
+            self._mean, self._var, self._count = update_mean_var_count_from_moments(
+                self._mean, self._var, self._count, batch_mean, batch_var, batch_count
             )
 
-            self._var = M2 / (self._count + new_count)
-            self._mean = (self._count * self._mean + new_count * new_mean) / (
-                self._count + new_count
+    def forward(self, x):
+        self.update(x)
+
+        return (x - self._mean) / self.stdev
+
+    @property
+    def stdev(self):
+        return torch.sqrt(
+            torch.max(
+                self._var,
+                torch.tensor(1e-4, device=self._var.device, dtype=self._var.dtype),
             )
-
-            self._count += new_count
-
-        stdev = torch.sqrt(
-            torch.max(self._var, torch.full_like(self._var, 1e-2))
         )
-        return (x - self._mean) / stdev

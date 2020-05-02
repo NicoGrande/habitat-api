@@ -99,6 +99,11 @@ _C.TASK.POINTGOAL_WITH_GPS_COMPASS_SENSOR.TYPE = (
 _C.TASK.NOISY_POINTGOAL_WITH_GPS_COMPASS_SENSOR = _C.TASK.POINTGOAL_SENSOR.clone()
 _C.TASK.NOISY_POINTGOAL_WITH_GPS_COMPASS_SENSOR.TYPE = "NoisyPointGoalWithGPSCompassSensor"
 # -----------------------------------------------------------------------------
+# POINTGOAL WITH GPS SENSOR
+# -----------------------------------------------------------------------------
+_C.TASK.POINTGOAL_WITH_GPS_SENSOR = _C.TASK.POINTGOAL_SENSOR.clone()
+_C.TASK.POINTGOAL_WITH_GPS_SENSOR.TYPE = "PointGoalWithGPSSensor"
+# -----------------------------------------------------------------------------
 # OBJECTGOAL SENSOR
 # -----------------------------------------------------------------------------
 _C.TASK.OBJECTGOAL_SENSOR = CN()
