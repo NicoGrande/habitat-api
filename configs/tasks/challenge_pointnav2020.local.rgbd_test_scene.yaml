@@ -40,15 +40,13 @@ TASK:
   SUCCESS_DISTANCE: 0.36 # 2 x Agent Radius
   SENSORS: ['POINTGOAL_SENSOR']
   POINTGOAL_SENSOR:
-    GOAL_FORMAT: POLAR
+    GOAL_FORMAT: CARTESIAN
     DIMENSIONALITY: 2
   GOAL_SENSOR_UUID: pointgoal
-  MEASUREMENTS: ['DISTANCE_TO_GOAL', "SUCCESS", 'SPL']
+  MEASUREMENTS: ['DISTANCE_TO_GOAL', "SUCCESS", 'SPL', 'SOFT_SPL']
   SUCCESS:
     SUCCESS_DISTANCE: 0.36 # 2 x Agent Radius
 
 DATASET:
   TYPE: PointNav-v1
-  SPLIT: val_mini
-  DATA_PATH:  code-upload-starters/data/datasets/pointnav/habitat-test-scenes/v1/{split}/{split}.json.gz
-  SCENES_DIR: code-upload-starters/data/scene_datasets/
+  DATA_PATH: data/datasets/pointnav/gibson/v2/{split}/{split}.json.gz
