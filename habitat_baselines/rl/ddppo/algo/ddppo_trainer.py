@@ -25,6 +25,7 @@ from habitat_baselines.common.environments import get_env_class
 from habitat_baselines.common.rollout_storage import RolloutStorage
 from habitat_baselines.common.tensorboard_utils import TensorboardWriter
 from habitat_baselines.common.utils import batch_obs, linear_decay
+from habitat_baselines.rl.aux_losses import AuxLosses
 from habitat_baselines.rl.ddppo.algo.ddp_utils import (
     EXIT,
     REQUEUE,
@@ -72,6 +73,10 @@ class DDPPOTrainer(PPOTrainer):
         self.actor_critic = PointNavResNetPolicy(
             observation_space=self.envs.observation_spaces[0],
             action_space=self.envs.action_spaces[0],
+            final_beta=ppo_cfg.final_beta,
+            start_beta=ppo_cfg.start_beta,
+            beta_decay_steps=ppo_cfg.beta_decay_steps,
+            decay_start_step=ppo_cfg.decay_start_step,
             hidden_size=ppo_cfg.hidden_size,
             rnn_type=self.config.RL.DDPPO.rnn_type,
             num_recurrent_layers=self.config.RL.DDPPO.num_recurrent_layers,
@@ -207,11 +212,18 @@ class DDPPOTrainer(PPOTrainer):
                         shape=self._encoder.output_shape,
                         dtype=np.float32,
                     ),
+                     "prev_visual_features": spaces.Box(
+                        low=np.iinfo(np.uint32).min,
+                        high=np.iinfo(np.uint32).max,
+                        shape=self._encoder.output_shape,
+                        dtype=np.float32,
+                    ),
                     **obs_space.spaces,
                 }
             )
             with torch.no_grad():
                 batch["visual_features"] = self._encoder(batch)
+                batch["prev_visual_features"] = torch.zeros_like(batch["visual_features"])
 
         rollouts = RolloutStorage(
             ppo_cfg.num_steps,
@@ -315,6 +327,7 @@ class DDPPOTrainer(PPOTrainer):
 
                 count_steps_delta = 0
                 self.agent.eval()
+                
                 for step in range(ppo_cfg.num_steps):
 
                     (
@@ -349,6 +362,7 @@ class DDPPOTrainer(PPOTrainer):
                     value_loss,
                     action_loss,
                     dist_entropy,
+                    aux_loss,
                 ) = self._update_agent(ppo_cfg, rollouts)
                 pth_time += delta_pth_time
 
@@ -362,11 +376,19 @@ class DDPPOTrainer(PPOTrainer):
                     window_episode_stats[k].append(stats[i].clone())
 
                 stats = torch.tensor(
-                    [value_loss, action_loss, count_steps_delta],
+                    [
+                        value_loss,
+                        action_loss,
+                        aux_loss,
+                        AuxLosses.get_loss("egomotion_error"),
+                        AuxLosses.get_loss("information"),
+                        0.1 * dist_entropy,
+                        count_steps_delta,
+                    ],
                     device=self.device,
                 )
                 distrib.all_reduce(stats)
-                count_steps += stats[2].item()
+                count_steps += stats[-1].item()
 
                 if self.world_rank == 0:
                     num_rollouts_done_store.set("num_done", "0")
@@ -384,6 +406,8 @@ class DDPPOTrainer(PPOTrainer):
                         for k, v in window_episode_stats.items()
                     }
                     deltas["count"] = max(deltas["count"], 1.0)
+
+                    print(deltas["reward"])
 
                     writer.add_scalar(
                         "reward",
@@ -403,7 +427,7 @@ class DDPPOTrainer(PPOTrainer):
 
                     writer.add_scalars(
                         "losses",
-                        {k: l for l, k in zip(losses, ["value", "policy"])},
+                        {k: l for l, k in zip(losses, ["value", "policy", "aux", "egomotion_error", "information", "entropy"])},
                         count_steps,
                     )
 

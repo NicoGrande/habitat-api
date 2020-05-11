@@ -34,6 +34,11 @@ from habitat.tasks.utils import (
     quaternion_from_coeff,
     quaternion_rotate_vector,
 )
+
+from habitat.tasks.nav.SE3 import SE3_Noise
+from habitat_sim.utils.common import quat_rotate_vector, quat_from_angle_axis
+from habitat_sim import geo
+
 from habitat.utils.visualizations import fog_of_war, maps
 
 cv2 = try_cv2_import()
@@ -275,6 +280,59 @@ class ImageGoalSensor(Sensor):
         return self._current_image_goal
 
 
+@registry.register_sensor(name="NoisyPointGoalWithGPSCompassSensor")
+class IntegratedNoisyPointGoalGPSAndCompassSensor(PointGoalSensor):
+    r"""Sensor that integrates PointGoals observations (which are used PointGoal Navigation) and GPS+Compass.
+    For the agent in simulator the forward direction is along negative-z.
+    In polar coordinate format the angle returned is azimuth to the goal.
+    Args:
+        sim: reference to the simulator for calculating task observations.
+        config: config for the PointGoal sensor. Can contain field for
+            GOAL_FORMAT which can be used to specify the format in which
+            the pointgoal is specified. Current options for goal format are
+            cartesian and polar.
+            Also contains a DIMENSIONALITY field which specifes the number
+            of dimensions ued to specify the goal, must be in [2, 3]
+    Attributes:
+        _goal_format: format for specifying the goal which can be done
+            in cartesian or polar coordinates.
+        _dimensionality: number of dimensions used to specify the goal
+    """
+
+    def __init__(self, *args: Any, sim: Simulator, config: Config, **kwargs: Any):
+        self.previous_episode = None
+        self.T_world_prev = SE3_Noise()
+        super().__init__(config=config, sim=sim)
+
+    def _get_uuid(self, *args: Any, **kwargs: Any):
+        return "noisy_pointgoal_with_gps_compass"
+
+    def get_observation(self, *args: Any, observations, episode, **kwargs: Any):
+        if self.previous_episode != episode:
+            self.T_world_prev = SE3_Noise()
+
+        new_agent_state = self._sim.get_agent_state()
+        T_world_curr = SE3_Noise(new_agent_state.rotation, new_agent_state.position)
+        self.T_world_prev = T_world_curr.inverse() * self.T_world_prev
+
+        noise_transform = SE3_Noise(
+            quat_from_angle_axis(np.random.uniform(-np.pi / 36, np.pi / 36), geo.UP),
+            np.array([1.0, 0.0, 1.0]) * np.random.uniform(-0.02, 0.02),
+        )
+
+        T_world_curr_noisy = self.T_world_prev  * (self.T_world_prev * noise_transform).inverse()
+        self.T_curr_prev = T_world_curr_noisy
+        self.previous_episode = episode
+
+        agent_position = T_world_curr_noisy.trans
+        rotation_world_agent = T_world_curr_noisy.rot
+        goal_position = np.array(episode.goals[0].position, dtype=np.float32)
+
+        return self._compute_pointgoal(
+            agent_position, rotation_world_agent, goal_position
+        )
+
+    
 @registry.register_sensor(name="PointGoalWithGPSCompassSensor")
 class IntegratedPointGoalGPSAndCompassSensor(PointGoalSensor):
     r"""Sensor that integrates PointGoals observations (which are used PointGoal Navigation) and GPS+Compass.
@@ -311,6 +369,39 @@ class IntegratedPointGoalGPSAndCompassSensor(PointGoalSensor):
 
         return self._compute_pointgoal(
             agent_position, rotation_world_agent, goal_position
+        )
+
+
+@registry.register_sensor(name="PointGoalWithGPSSensor")
+class IntegratedPointGoalGPSSensor(PointGoalSensor):
+    r"""Sensor that integrates PointGoals observations (which are used PointGoal Navigation) and GPS.
+    For the agent in simulator the forward direction is along negative-z.
+    In polar coordinate format the angle returned is azimuth to the goal.
+    Args:
+        sim: reference to the simulator for calculating task observations.
+        config: config for the PointGoal sensor. Can contain field for
+            GOAL_FORMAT which can be used to specify the format in which
+            the pointgoal is specified. Current options for goal format are
+            cartesian and polar.
+            Also contains a DIMENSIONALITY field which specifes the number
+            of dimensions ued to specify the goal, must be in [2, 3]
+    Attributes:
+        _goal_format: format for specifying the goal which can be done
+            in cartesian or polar coordinates.
+        _dimensionality: number of dimensions used to specify the goal
+    """
+
+    def _get_uuid(self, *args: Any, **kwargs: Any):
+        return "pointgoal_with_gps"
+
+    def get_observation(self, *args: Any, observations, episode, **kwargs: Any):
+        agent_state = self._sim.get_agent_state()
+        agent_position = agent_state.position
+        rotation_world_start = quaternion_from_coeff(episode.start_rotation)
+        goal_position = np.array(episode.goals[0].position, dtype=np.float32)
+
+        return self._compute_pointgoal(
+            agent_position, rotation_world_start, goal_position
         )
 
 

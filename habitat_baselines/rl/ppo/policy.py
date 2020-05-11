@@ -8,8 +8,10 @@ import abc
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from habitat_baselines.common.utils import CategoricalNet, Flatten
+from habitat_baselines.rl.aux_losses import AuxLosses
 from habitat_baselines.rl.models.rnn_state_encoder import RNNStateEncoder
 from habitat_baselines.rl.models.simple_cnn import SimpleCNN
 
@@ -20,56 +22,119 @@ class Policy(nn.Module):
         self.net = net
         self.dim_actions = dim_actions
 
-        self.action_distribution = CategoricalNet(
-            self.net.output_size, self.dim_actions
-        )
+        self.supervise_stop = False
+
+        if self.supervise_stop:
+            self.non_stop_action_distribution = CategoricalNet(
+                self.net.output_size, self.dim_actions - 1
+            )
+
+            self.stop_action_distribution = CategoricalNet(self.net.output_size, 2)
+        else:
+            self.action_distribution = CategoricalNet(
+                self.net.output_size, self.dim_actions
+            )
+
         self.critic = CriticHead(self.net.output_size)
 
     def forward(self, *x):
         raise NotImplementedError
 
     def act(
-        self,
-        observations,
-        rnn_hidden_states,
-        prev_actions,
-        masks,
-        deterministic=False,
+        self, observations, rnn_hidden_states, prev_actions, masks, deterministic=False
     ):
         features, rnn_hidden_states = self.net(
             observations, rnn_hidden_states, prev_actions, masks
         )
-        distribution = self.action_distribution(features)
+
         value = self.critic(features)
 
-        if deterministic:
-            action = distribution.mode()
-        else:
-            action = distribution.sample()
+        if self.supervise_stop:
 
-        action_log_probs = distribution.log_probs(action)
+            stop_distribution = self.stop_action_distribution(features)
+            non_stop_distribution = self.non_stop_action_distribution(features)
+            if deterministic:
+                stop = stop_distribution.mode()
+                non_stop = non_stop_distribution.mode()
+            else:
+                stop = stop_distribution.sample()
+                non_stop = non_stop_distribution.sample()
+
+            action = torch.where(stop == 1, torch.zeros_like(stop), non_stop + 1)
+            action_log_probs = torch.where(
+                action == 0,
+                stop_distribution.log_probs(torch.full_like(action, 1)),
+                stop_distribution.log_probs(torch.full_like(action, 0))
+                + non_stop_distribution.log_probs(
+                    torch.max(action - 1, torch.zeros_like(action))
+                ),
+            )
+        else:
+            action_distribution = self.action_distribution(features)
+
+            if deterministic:
+                action = action_distribution.mode()
+            else:
+                action = action_distribution.sample()
+
+            action_log_probs = action_distribution.log_probs(action)
 
         return value, action, action_log_probs, rnn_hidden_states
 
     def get_value(self, observations, rnn_hidden_states, prev_actions, masks):
-        features, _ = self.net(
-            observations, rnn_hidden_states, prev_actions, masks
-        )
+        features, _ = self.net(observations, rnn_hidden_states, prev_actions, masks)
         return self.critic(features)
 
     def evaluate_actions(
         self, observations, rnn_hidden_states, prev_actions, masks, action
     ):
-        features, rnn_hidden_states = self.net(
-            observations, rnn_hidden_states, prev_actions, masks
-        )
-        distribution = self.action_distribution(features)
+        features, _ = self.net(observations, rnn_hidden_states, prev_actions, masks)
         value = self.critic(features)
 
-        action_log_probs = distribution.log_probs(action)
-        distribution_entropy = distribution.entropy().mean()
+        if self.supervise_stop:
+            stop_distribution = self.stop_action_distribution(features)
+            non_stop_distribution = self.non_stop_action_distribution(features)
 
-        return value, action_log_probs, distribution_entropy, rnn_hidden_states
+            action_log_probs = torch.where(
+                action == 0,
+                stop_distribution.log_probs(torch.full_like(action, 1)),
+                stop_distribution.log_probs(torch.full_like(action, 0))
+                + non_stop_distribution.log_probs(
+                    torch.max(action - 1, torch.zeros_like(action))
+                ),
+            )
+
+            distribution_entropy = (
+                -1.0
+                * (
+                    stop_distribution.probs[:, -1] * stop_distribution.logits[:, -1]
+                    + (
+                        stop_distribution.probs[:, 0:1]
+                        * non_stop_distribution.probs
+                        * (
+                            stop_distribution.logits[:, 0:1]
+                            + non_stop_distribution.logits
+                        )
+                    ).sum(-1)
+                ).mean()
+            )
+
+            stop_loss = F.cross_entropy(
+                stop_distribution.logits,
+                observations["stop_oracle"].long().squeeze(-1),
+                weight=torch.tensor(
+                    [1.0, 1.0 / np.sqrt(100.0)], device=features.device
+                ),
+            )
+
+            AuxLosses.register_loss("stop_loss", stop_loss)
+        else:
+            action_distribution = self.action_distribution(features)
+
+            action_log_probs = action_distribution.log_probs(action)
+            distribution_entropy = action_distribution.entropy().mean()
+
+        return value, action_log_probs, distribution_entropy
 
 
 class CriticHead(nn.Module):
@@ -85,11 +150,7 @@ class CriticHead(nn.Module):
 
 class PointNavBaselinePolicy(Policy):
     def __init__(
-        self,
-        observation_space,
-        action_space,
-        goal_sensor_uuid,
-        hidden_size=512,
+        self, observation_space, action_space, goal_sensor_uuid, hidden_size=512
     ):
         super().__init__(
             PointNavBaselineNet(
@@ -130,9 +191,7 @@ class PointNavBaselineNet(Net):
     def __init__(self, observation_space, hidden_size, goal_sensor_uuid):
         super().__init__()
         self.goal_sensor_uuid = goal_sensor_uuid
-        self._n_input_goal = observation_space.spaces[
-            self.goal_sensor_uuid
-        ].shape[0]
+        self._n_input_goal = observation_space.spaces[self.goal_sensor_uuid].shape[0]
         self._hidden_size = hidden_size
 
         self.visual_encoder = SimpleCNN(observation_space, hidden_size)

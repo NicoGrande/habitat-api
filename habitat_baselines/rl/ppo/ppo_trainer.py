@@ -220,6 +220,7 @@ class PPOTrainer(BaseRLTrainer):
 
         if self._static_encoder:
             with torch.no_grad():
+                batch["prev_visual_features"] = step_observation["visual_features"]
                 batch["visual_features"] = self._encoder(batch)
 
         rollouts.insert(
@@ -253,7 +254,7 @@ class PPOTrainer(BaseRLTrainer):
             next_value, ppo_cfg.use_gae, ppo_cfg.gamma, ppo_cfg.tau
         )
 
-        value_loss, action_loss, dist_entropy = self.agent.update(rollouts)
+        value_loss, action_loss, dist_entropy, query_loss = self.agent.update(rollouts)
 
         rollouts.after_update()
 
@@ -262,11 +263,11 @@ class PPOTrainer(BaseRLTrainer):
             value_loss,
             action_loss,
             dist_entropy,
+            query_loss,
         )
 
     def train(self) -> None:
         r"""Main method for training PPO.
-
         Returns:
             None
         """
@@ -471,12 +472,20 @@ class PPOTrainer(BaseRLTrainer):
         logger.info(f"env config: {config}")
         self.envs = construct_envs(config, get_env_class(config.ENV_NAME))
         self._setup_actor_critic_agent(ppo_cfg)
+        self.actor_critic.eval()
+
+        if self._static_encoder:
+            self._encoder = self.agent.actor_critic.net.visual_encoder
 
         self.agent.load_state_dict(ckpt_dict["state_dict"])
         self.actor_critic = self.agent.actor_critic
 
         observations = self.envs.reset()
         batch = batch_obs(observations, device=self.device)
+
+        if self._static_encoder:
+            batch["visual_features"] = self._encoder(batch)
+            batch["prev_visual_features"] = torch.zeros_like(batch["visual_features"])
 
         current_episode_reward = torch.zeros(
             self.envs.num_envs, 1, device=self.device
@@ -524,6 +533,7 @@ class PPOTrainer(BaseRLTrainer):
             current_episodes = self.envs.current_episodes()
 
             with torch.no_grad():
+                step_batch = batch
                 (
                     _,
                     actions,
@@ -545,6 +555,10 @@ class PPOTrainer(BaseRLTrainer):
                 list(x) for x in zip(*outputs)
             ]
             batch = batch_obs(observations, device=self.device)
+
+            if self._static_encoder:
+                batch["prev_visual_features"] = step_batch["visual_features"]
+                batch["visual_features"] = self._encoder(batch)
 
             not_done_masks = torch.tensor(
                 [[0.0] if done else [1.0] for done in dones],

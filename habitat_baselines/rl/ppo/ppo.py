@@ -4,9 +4,15 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+import numpy as np
 import torch
+import torch.distributed as distrib
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
+
+from habitat_baselines.rl.aux_losses import AuxLosses
+from habitat_baselines.rl.ddppo.policy.running_mean_and_var import RunningMeanAndVar
 
 EPS_PPO = 1e-5
 
@@ -49,6 +55,9 @@ class PPO(nn.Module):
         self.device = next(actor_critic.parameters()).device
         self.use_normalized_advantage = use_normalized_advantage
 
+        self.reward_whitten = RunningMeanAndVar(shape=(1,))
+        self.reward_whitten.to(self.device)
+
     def forward(self, *x):
         raise NotImplementedError
 
@@ -64,8 +73,10 @@ class PPO(nn.Module):
 
         value_loss_epoch = 0
         action_loss_epoch = 0
+        aux_losses_epoch = 0
         dist_entropy_epoch = 0
 
+        AuxLosses.activate()
         for e in range(self.ppo_epoch):
             data_generator = rollouts.recurrent_generator(
                 advantages, self.num_mini_batch
@@ -84,12 +95,12 @@ class PPO(nn.Module):
                     adv_targ,
                 ) = sample
 
+                AuxLosses.clear()
                 # Reshape to do in a single forward pass for all steps
                 (
                     values,
                     action_log_probs,
                     dist_entropy,
-                    _,
                 ) = self.actor_critic.evaluate_actions(
                     obs_batch,
                     recurrent_hidden_states_batch,
@@ -98,14 +109,10 @@ class PPO(nn.Module):
                     actions_batch,
                 )
 
-                ratio = torch.exp(
-                    action_log_probs - old_action_log_probs_batch
-                )
+                ratio = torch.exp(action_log_probs - old_action_log_probs_batch)
                 surr1 = ratio * adv_targ
                 surr2 = (
-                    torch.clamp(
-                        ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
-                    )
+                    torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param)
                     * adv_targ
                 )
                 action_loss = -torch.min(surr1, surr2).mean()
@@ -115,12 +122,9 @@ class PPO(nn.Module):
                         values - value_preds_batch
                     ).clamp(-self.clip_param, self.clip_param)
                     value_losses = (values - return_batch).pow(2)
-                    value_losses_clipped = (
-                        value_pred_clipped - return_batch
-                    ).pow(2)
+                    value_losses_clipped = (value_pred_clipped - return_batch).pow(2)
                     value_loss = (
-                        0.5
-                        * torch.max(value_losses, value_losses_clipped).mean()
+                        0.5 * torch.max(value_losses, value_losses_clipped).mean()
                     )
                 else:
                     value_loss = 0.5 * (return_batch - values).pow(2).mean()
@@ -131,6 +135,14 @@ class PPO(nn.Module):
                     + action_loss
                     - dist_entropy * self.entropy_coef
                 )
+
+                use_aux_loss = True
+
+                aux_losses = AuxLosses.reduce()
+                aux_losses = (1.0 if use_aux_loss else 0.0) * aux_losses
+                aux_losses_epoch += aux_losses.item()
+
+                total_loss = total_loss + aux_losses
 
                 self.before_backward(total_loss)
                 total_loss.backward()
@@ -149,8 +161,16 @@ class PPO(nn.Module):
         value_loss_epoch /= num_updates
         action_loss_epoch /= num_updates
         dist_entropy_epoch /= num_updates
+        aux_losses_epoch /= num_updates
 
-        return value_loss_epoch, action_loss_epoch, dist_entropy_epoch
+        AuxLosses.deactivate()
+
+        return (
+            value_loss_epoch,
+            action_loss_epoch,
+            dist_entropy_epoch,
+            aux_losses_epoch,
+        )
 
     def before_backward(self, loss):
         pass
@@ -159,9 +179,7 @@ class PPO(nn.Module):
         pass
 
     def before_step(self):
-        nn.utils.clip_grad_norm_(
-            self.actor_critic.parameters(), self.max_grad_norm
-        )
+        nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
 
     def after_step(self):
         pass
