@@ -295,6 +295,8 @@ class DDPPOTrainer(PPOTrainer):
                 if ppo_cfg.use_linear_lr_decay:
                     lr_scheduler.step()
 
+                self.actor_critic.update_ib_beta(count_steps)
+                
                 if ppo_cfg.use_linear_clip_decay:
                     self.agent.clip_param = ppo_cfg.clip_param * linear_decay(
                         update, self.config.NUM_UPDATES

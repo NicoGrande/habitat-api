@@ -107,7 +107,7 @@ def requeue_job():
 
     if distrib.get_rank() == 0:
         logger.info(f"Requeueing job {SLURM_JOBID}")
-        subprocess.check_call(shlex.split("scontrol requeue {SLURM_JOBID}"))
+        subprocess.check_call(shlex.split(f"scontrol requeue {SLURM_JOBID}"))
 
 
 def get_ifname():
