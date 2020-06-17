@@ -77,6 +77,7 @@ class DDPPOTrainer(PPOTrainer):
             start_beta=ppo_cfg.start_beta,
             beta_decay_steps=ppo_cfg.beta_decay_steps,
             decay_start_step=ppo_cfg.decay_start_step,
+            use_info_bot=ppo_cfg.use_info_bot,
             hidden_size=ppo_cfg.hidden_size,
             rnn_type=self.config.RL.DDPPO.rnn_type,
             num_recurrent_layers=self.config.RL.DDPPO.num_recurrent_layers,
@@ -132,6 +133,7 @@ class DDPPOTrainer(PPOTrainer):
             eps=ppo_cfg.eps,
             max_grad_norm=ppo_cfg.max_grad_norm,
             use_normalized_advantage=ppo_cfg.use_normalized_advantage,
+            use_aux_losses=ppo_cfg.use_aux_losses,
         )
 
     def train(self) -> None:
@@ -174,7 +176,9 @@ class DDPPOTrainer(PPOTrainer):
             self.device = torch.device("cpu")
 
         self.envs = construct_envs(
-            self.config, get_env_class(self.config.ENV_NAME)
+            self.config,
+            get_env_class(self.config.ENV_NAME),
+            workers_ignore_signals=True,
         )
 
         ppo_cfg = self.config.RL.PPO
@@ -466,6 +470,26 @@ class DDPPOTrainer(PPOTrainer):
                             f"ckpt.{count_checkpoints}.pth",
                             dict(step=count_steps),
                         )
+
+                        requeue_stats = dict(
+                            env_time=env_time,
+                            pth_time=pth_time,
+                            count_steps=count_steps,
+                            count_checkpoints=count_checkpoints,
+                            start_update=update,
+                            prev_time=(time.time() - t_start) + prev_time,
+                        )
+
+                        save_interrupted_state(
+                            dict(
+                                state_dict=self.agent.state_dict(),
+                                optim_state=self.agent.optimizer.state_dict(),
+                                lr_sched_state=lr_scheduler.state_dict(),
+                                config=self.config,
+                                requeue_stats=requeue_stats,
+                            )
+                        )
+
                         count_checkpoints += 1
 
             self.envs.close()

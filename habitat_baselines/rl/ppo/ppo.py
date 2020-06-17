@@ -26,6 +26,7 @@ class PPO(nn.Module):
         num_mini_batch,
         value_loss_coef,
         entropy_coef,
+        use_aux_losses,
         lr=None,
         eps=None,
         max_grad_norm=None,
@@ -57,6 +58,7 @@ class PPO(nn.Module):
 
         self.reward_whitten = RunningMeanAndVar(shape=(1,))
         self.reward_whitten.to(self.device)
+        self.use_aux_losses = use_aux_losses
 
     def forward(self, *x):
         raise NotImplementedError
@@ -136,7 +138,7 @@ class PPO(nn.Module):
                     - dist_entropy * self.entropy_coef
                 )
 
-                use_aux_loss = True
+                use_aux_loss = self.use_aux_losses
 
                 aux_losses = AuxLosses.reduce()
                 aux_losses = (1.0 if use_aux_loss else 0.0) * aux_losses

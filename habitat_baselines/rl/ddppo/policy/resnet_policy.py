@@ -74,7 +74,7 @@ def _subsampled_mean(x, p=0.2):
 
 
 class VIBLayer(nn.Module):
-    def __init__(self, state_size, output_size, beta=1e-6):
+    def __init__(self, state_size, output_size, use_info_bot=True, beta=1e-6):
         super().__init__()
 
         self.priv_embed = nn.Linear(3, 32)
@@ -87,6 +87,7 @@ class VIBLayer(nn.Module):
         )
         self.register_buffer("beta", torch.tensor(beta))
         self.output_size = output_size
+        self.use_info_bot = use_info_bot
 
     def forward(self, s, obs):
         if "pointgoal_with_gps" not in obs:
@@ -107,6 +108,11 @@ class VIBLayer(nn.Module):
             2,
             s.dim() - 1,
         )
+
+        if not self.use_info_bot:
+            mu.fill_(0.0)
+            sigma.fill_(1.0)
+
         sigma = F.softplus(sigma)
         dist = torch.distributions.Normal(mu, sigma)
 
@@ -126,6 +132,7 @@ class VIBLayer(nn.Module):
                 _subsampled_mean(
                     torch.distributions.kl_divergence(dist, self.prior(s))
                 ),
+                # torch.distributions.kl_divergence(dist, self.prior(s)).mean(),
                 self.beta,
             )
 
@@ -139,8 +146,8 @@ class VIBLayer(nn.Module):
 
 
 class VIBCompleteLayer(VIBLayer):
-    def __init__(self, state_size, output_size, beta=1e-6):
-        super().__init__(state_size, output_size, beta)
+    def __init__(self, state_size, output_size, use_info_bot=True, beta=1e-6):
+        super().__init__(state_size, output_size, use_info_bot, beta)
 
         self.gps_head = nn.Sequential(
             nn.Linear(state_size, state_size // 2),
@@ -188,8 +195,8 @@ class VIBCompleteLayer(VIBLayer):
 
 
 class VBBLayer(VIBLayer):
-    def __init__(self, state_size, privileged_size, output_size, beta=1e-6):
-        super().__init__(state_size, privileged_size, output_size, beta)
+    def __init__(self, state_size, privileged_size, output_size, use_info_bot=True, beta=1e-6):
+        super().__init__(state_size, privileged_size, output_size, use_info_bot, beta)
 
         self.channel_cap_network = nn.Sequential(
             nn.Linear(state_size, state_size // 2, bias=False),
@@ -246,6 +253,7 @@ class PointNavResNetPolicy(Policy):
         start_beta,
         beta_decay_steps,
         decay_start_step,
+        use_info_bot,
         goal_sensor_uuid="pointgoal_with_gps",
         hidden_size=512,
         num_recurrent_layers=2,
@@ -265,6 +273,7 @@ class PointNavResNetPolicy(Policy):
                 backbone=backbone,
                 resnet_baseplanes=resnet_baseplanes,
                 normalize_visual_inputs=False,
+                use_info_bot=use_info_bot,
             ),
             action_space.n,
         )
@@ -455,6 +464,7 @@ class PointNavResNetNet(Net):
         backbone,
         resnet_baseplanes,
         normalize_visual_inputs,
+        use_info_bot,
     ):
         super().__init__()
         self.goal_sensor_uuid = goal_sensor_uuid
@@ -468,9 +478,10 @@ class PointNavResNetNet(Net):
         self._n_input_goal = 32
 
         self.ib = True
+        self.use_info_bot = use_info_bot
 
         if self.ib:
-            self.bottleneck = VIBCompleteLayer(self._hidden_size, self._n_input_goal)
+            self.bottleneck = VIBCompleteLayer(self._hidden_size, self._n_input_goal, self.use_info_bot)
 
         self.visual_encoder = ResNetEncoder(
             observation_space,

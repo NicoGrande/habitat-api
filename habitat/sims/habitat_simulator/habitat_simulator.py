@@ -111,7 +111,7 @@ class HabitatSimDepthSensor(DepthSensor):
     def get_observation(self, sim_obs):
         obs = sim_obs.get(self.uuid, None)
         check_sim_obs(obs, self)
-
+        obs[obs >= 10.0] = 0.0
         if isinstance(obs, np.ndarray):
             obs = np.clip(obs, self.config.MIN_DEPTH, self.config.MAX_DEPTH)
 

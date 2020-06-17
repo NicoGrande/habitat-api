@@ -35,6 +35,7 @@ def _clean_exit_handler(signum, frame):
 
 
 def _requeue_handler(signal, frame):
+    print("Got signal to requeue", flush=True)
     EXIT.set()
     REQUEUE.set()
 
