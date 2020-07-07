@@ -94,6 +94,13 @@ _C.TASK.POINTGOAL_WITH_GPS_COMPASS_SENSOR.TYPE = (
     "PointGoalWithGPSCompassSensor"
 )
 # -----------------------------------------------------------------------------
+# POINTGOAL WITH EGOMOTION PREDICTION SENSOR
+# -----------------------------------------------------------------------------
+_C.TASK.POINTGOAL_WITH_EGO_PREDICTION_SENSOR = _C.TASK.POINTGOAL_SENSOR.clone()
+_C.TASK.POINTGOAL_WITH_EGO_PREDICTION_SENSOR.TYPE = (
+    "PointGoalSensorWithEgoPredictions"
+)
+# -----------------------------------------------------------------------------
 # NOISY POINTGOAL WITH GPS+COMPASS SENSOR
 # -----------------------------------------------------------------------------
 _C.TASK.NOISY_POINTGOAL_WITH_GPS_COMPASS_SENSOR = _C.TASK.POINTGOAL_SENSOR.clone()

@@ -167,6 +167,9 @@ class PPOTrainer(BaseRLTrainer):
             step_observation = {
                 k: v[rollouts.step] for k, v in rollouts.observations.items()
             }
+            step_prev_observation = {
+                k: v[rollouts.step] for k, v in rollouts.previous_observations.items()
+            }
 
             (
                 values,
@@ -175,6 +178,7 @@ class PPOTrainer(BaseRLTrainer):
                 recurrent_hidden_states,
             ) = self.actor_critic.act(
                 step_observation,
+                step_prev_observation,
                 rollouts.recurrent_hidden_states[rollouts.step],
                 rollouts.prev_actions[rollouts.step],
                 rollouts.masks[rollouts.step],
@@ -223,6 +227,18 @@ class PPOTrainer(BaseRLTrainer):
                 batch["prev_visual_features"] = step_observation["visual_features"]
                 batch["visual_features"] = self._encoder(batch)
 
+        depth_obs = list(torch.unbind(batch["depth"]))
+        
+        for i in range(len(depth_obs)):
+            depth_obs[i] = self.noise_model.apply(depth_obs[i].squeeze(dim=2).to(self.device))
+        
+        batch["depth"].copy_(
+                            torch.stack(depth_obs, dim=0)
+                            .unsqueeze(dim=3)
+                            .to(device=self.device)
+                            .to(dtype=torch.float)
+                            )
+
         rollouts.insert(
             batch,
             recurrent_hidden_states,
@@ -243,8 +259,12 @@ class PPOTrainer(BaseRLTrainer):
             last_observation = {
                 k: v[rollouts.step] for k, v in rollouts.observations.items()
             }
+            prev_last_observation = {
+                k: v[rollouts.step] for k, v in rollouts.previous_observations.items()
+            }
             next_value = self.actor_critic.get_value(
                 last_observation,
+                prev_last_observation,
                 rollouts.recurrent_hidden_states[rollouts.step],
                 rollouts.prev_actions[rollouts.step],
                 rollouts.masks[rollouts.step],
@@ -541,6 +561,7 @@ class PPOTrainer(BaseRLTrainer):
                     test_recurrent_hidden_states,
                 ) = self.actor_critic.act(
                     batch,
+                    None,
                     test_recurrent_hidden_states,
                     prev_actions,
                     not_done_masks,

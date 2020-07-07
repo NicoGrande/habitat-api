@@ -10,15 +10,16 @@ SIMULATOR:
     RADIUS: 0.18
   HABITAT_SIM_V0:
     GPU_DEVICE_ID: 0
-    ALLOW_SLIDING: False
+    ALLOW_SLIDING: True
+  
   RGB_SENSOR:
     WIDTH: 640
     HEIGHT: 360
     HFOV: 70
     POSITION: [0, 0.88, 0]
-    NOISE_MODEL: "GaussianNoiseModel"
-    NOISE_MODEL_KWARGS:
-      intensity_constant: 0.1
+    # NOISE_MODEL: "GaussianNoiseModel"
+    # NOISE_MODEL_KWARGS:
+    #   intensity_constant: 0.1
 
   DEPTH_SENSOR:
     WIDTH: 640
@@ -27,18 +28,18 @@ SIMULATOR:
     MIN_DEPTH: 0.1
     MAX_DEPTH: 10.0
     POSITION: [0, 0.88, 0]
-    NOISE_MODEL: "RedwoodDepthNoiseModel"
+    # NOISE_MODEL: "RedwoodDepthNoiseModel"
 
-  ACTION_SPACE_CONFIG: 'pyrobotnoisy'
-  NOISE_MODEL:
-    ROBOT: "LoCoBot"
-    CONTROLLER: 'Proportional'
-    NOISE_MULTIPLIER: 0.5
+  # ACTION_SPACE_CONFIG: 'pyrobotnoisy'
+  # NOISE_MODEL:
+  #   ROBOT: "LoCoBot"
+  #   CONTROLLER: 'Proportional'
+  #   NOISE_MULTIPLIER: 0.5
 
 TASK:
   TYPE: Nav-v0
   SUCCESS_DISTANCE: 0.36 # 2 x Agent Radius
-  SENSORS: ['POINTGOAL_SENSOR', 'POINTGOAL_WITH_EGO_PREDICTION_SENSOR']
+  SENSORS: ['POINTGOAL_SENSOR']
   POINTGOAL_SENSOR:
     GOAL_FORMAT: CARTESIAN
     DIMENSIONALITY: 2

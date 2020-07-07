@@ -207,6 +207,186 @@ class PointGoalSensor(Sensor):
             source_position, rotation_world_start, goal_position
         )
 
+@registry.register_sensor
+class PointGoalSensorWithEgoPredictions(PointGoalSensor):
+    """
+    Sensor for PointGoal observations which are used in the PointNav task.
+    For the agent in simulator the forward direction is along negative-z.
+    In polar coordinate format the angle returned is azimuth to the goal.
+    Args:
+        sim: reference to the simulator for calculating task observations.
+        config: config for the PointGoal sensor. Can contain field for
+            GOAL_FORMAT which can be used to specify the format in which
+            the pointgoal is specified. Current options for goal format are
+            cartesian and polar.
+    Attributes:
+        _goal_format: format for specifying the goal which can be done
+            in cartesian or polar coordinates.
+    """
+
+    def __init__(self, *args: Any, sim: Simulator, config: Config, **kwargs: Any):
+
+        self.pointgoal = None
+        self.current_episode_id = None
+        self.prev_agent_state = None
+        self.prev_agent_obs = None
+        
+        # make arrangements for necessary imports
+        # that will allow us to load a pre-trained
+        # ego-motion estimation model
+        import sys
+        sys.path.append("..")
+        from habitat_baselines.standalone.config import cfg as pretrained_ego_cfg
+        from habitat_baselines.standalone.models import build_egomotion_estimation_model
+
+        # load the egomotion estimation model defn
+        pretrained_ego_cfg.merge_from_file(config.MODEL.CONFIG_FILE)
+        pretrained_ego_cfg.freeze()
+
+        import torch
+        self.device = torch.device("cuda", config.MODEL.GPU_ID)
+
+        self.ego_model = build_egomotion_estimation_model(
+            pretrained_ego_cfg,
+            self.device
+        )
+
+        # load the pre-trained weights
+        cp = torch.load(config.MODEL.CHECKPOINT_PATH, map_location="cpu")
+        self.ego_model.load_state_dict(cp["model_state"])
+        self.ego_model.eval()
+
+        super().__init__(config=config, sim=sim)
+
+    def _get_uuid(self, *args: Any, **kwargs: Any):
+        return "pointgoal_with_egomotion_prediciton"
+
+    def get_observation(self, *args: Any, observations, episode: Episode, **kwargs: Any):
+        curr_agent_state = self._sim.get_agent_state()
+
+        episode_id = (episode.episode_id, episode.scene_id)
+        # beginning of episode
+        if self.current_episode_id != episode_id:
+            # init pointgoal using agent state + goal location
+            self.current_episode_id = episode_id
+
+            ref_position = curr_agent_state.position
+            rotation_world_agent = curr_agent_state.rotation
+
+            import quaternion
+            T_agent_to_scene = np.zeros(
+                shape=(4, 4),
+                dtype=np.float32
+            )
+            T_agent_to_scene[3, 3] = 1.
+            T_agent_to_scene[0:3, 3] = ref_position
+            T_agent_to_scene[0:3, 0:3] = (
+                quaternion.as_rotation_matrix(rotation_world_agent)
+            )
+
+            T_scene_to_agent = np.linalg.inv(T_agent_to_scene)
+            goal = np.array(episode.goals[0].position, dtype=np.float32)
+            direction_vector_agent = np.dot(
+                T_scene_to_agent,
+                np.concatenate((goal, np.asarray([1.])), axis=0)
+            )
+
+            assert direction_vector_agent[3] == 1.
+            self.pointgoal = direction_vector_agent[:3]
+            self.prev_agent_state = curr_agent_state
+            self.prev_agent_obs = observations
+
+            if self._goal_format == "POLAR":
+                rho, phi = cartesian_to_polar(
+                    -direction_vector_agent[2], direction_vector_agent[0]
+                )
+                direction_vector_agent = np.array([rho, -phi], dtype=np.float32)
+            
+            else:
+                if self._dimensionality == 2:
+                    return np.array(
+                        [-direction_vector_agent[2], direction_vector_agent[0]],
+                        dtype=np.float32,
+                    )
+
+            return direction_vector_agent
+    
+        # middle of episode
+        # update pointgoal using egomotion
+        import torch
+        curr_obs = torch.from_numpy(
+            np.asarray(observations["depth"], dtype=np.float32)
+        ).permute(2,0,1).unsqueeze(0)
+        prev_obs = torch.from_numpy(
+            np.asarray(self.prev_agent_obs["depth"], dtype=np.float32)
+        ).permute(2,0,1).unsqueeze(0)
+
+        ego_model_input = torch.cat([prev_obs, curr_obs], 1)
+        ego_model_input =  ego_model_input.to(self.device)
+        with torch.no_grad():
+            feats = self.ego_model.cnn(ego_model_input)
+            egomotion_preds = self.ego_model.regressor(feats)[0]
+
+        noisy_x, noisy_y, noisy_z, noisy_yaw = (
+            egomotion_preds[0].item(),
+            egomotion_preds[1].item(),
+            egomotion_preds[2].item(),
+            egomotion_preds[3].item()
+        )
+
+        # re-contruct the transformation matrix
+        # using the noisy estimates for (x, y, z, yaw)
+        import quaternion
+        noisy_translation = np.asarray([
+            noisy_x,
+            noisy_y,
+            noisy_z,
+        ], dtype =np.float32)
+        noisy_rot_mat = quaternion.as_rotation_matrix(
+            quat_from_angle_axis(
+                theta=noisy_yaw,
+                axis=np.asarray([0, 1, 0])
+            )
+        )
+
+        noisy_T_curr2prev_state = np.zeros(
+            shape=(4, 4),
+            dtype=np.float32
+        )
+        noisy_T_curr2prev_state[3,3] = 1.
+        noisy_T_curr2prev_state[0:3, 0:3] = noisy_rot_mat
+        noisy_T_curr2prev_state[0:3, 3] = noisy_translation
+
+        noisy_T_prev2curr_state = np.linalg.inv(
+            noisy_T_curr2prev_state
+        )
+
+        direction_vector_agent = np.dot(
+            noisy_T_prev2curr_state,
+            np.concatenate(
+                (self.pointgoal, np.asarray([1.], dtype=np.float32)),
+                axis=0
+            )
+        )
+        assert direction_vector_agent[3] == 1.
+        self.pointgoal = direction_vector_agent[:3]
+        self.prev_agent_state = curr_agent_state
+        self.prev_agent_obs = observations
+
+        if self._goal_format == "POLAR":
+            rho, phi = cartesian_to_polar(
+                -direction_vector_agent[2], direction_vector_agent[0]
+            )
+            direction_vector_agent = np.array([rho, -phi], dtype=np.float32)
+        
+        else:
+            if self._dimensionality == 2:
+                return np.array(
+                    [-direction_vector_agent[2], direction_vector_agent[0]],
+                    dtype=np.float32,
+                )
+        
+        return direction_vector_agent
 
 @registry.register_sensor
 class ImageGoalSensor(Sensor):
