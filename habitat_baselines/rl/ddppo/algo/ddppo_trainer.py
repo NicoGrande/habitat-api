@@ -18,8 +18,6 @@ from gym import spaces
 from gym.spaces.dict_space import Dict as SpaceDict
 from torch.optim.lr_scheduler import LambdaLR
 
-from habitat_sim.sensors.noise_models.redwood_depth_noise_model import RedwoodDepthNoiseModel
-
 from habitat import Config, logger
 from habitat_baselines.common.baseline_registry import baseline_registry
 from habitat_baselines.common.env_utils import construct_envs
@@ -158,7 +156,6 @@ class DDPPOTrainer(PPOTrainer):
 
         self.world_rank = distrib.get_rank()
         self.world_size = distrib.get_world_size()
-        self.noise_model = RedwoodDepthNoiseModel(gpu_device_id=self.local_rank)
 
         self.config.defrost()
         self.config.TORCH_GPU_ID = self.local_rank
@@ -245,21 +242,7 @@ class DDPPOTrainer(PPOTrainer):
         rollouts.to(self.device)
 
         for sensor in rollouts.observations:
-            if sensor == "depth":
-                depth_obs = list(torch.unbind(batch[sensor]))
-                
-                for i in range(len(depth_obs)):
-                    depth_obs[i] = self.noise_model.apply(depth_obs[i].squeeze(dim=2).to(self.device))
-                
-                rollouts.observations[sensor][0].copy_(
-                                                        torch.stack(depth_obs, dim=0)
-                                                        .unsqueeze(dim=3)
-                                                        .to(device=self.device)
-                                                        .to(dtype=torch.float)
-                                                        )
-            else:
-                rollouts.observations[sensor][0].copy_(batch[sensor])
-
+            rollouts.observations[sensor][0].copy_(batch[sensor])
             rollouts.previous_observations[sensor][0].copy_(torch.zeros_like(batch[sensor]))
 
         # batch and observations may contain shared PyTorch CUDA

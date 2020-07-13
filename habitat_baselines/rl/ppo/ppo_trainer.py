@@ -227,18 +227,6 @@ class PPOTrainer(BaseRLTrainer):
                 batch["prev_visual_features"] = step_observation["visual_features"]
                 batch["visual_features"] = self._encoder(batch)
 
-        depth_obs = list(torch.unbind(batch["depth"]))
-        
-        for i in range(len(depth_obs)):
-            depth_obs[i] = self.noise_model.apply(depth_obs[i].squeeze(dim=2).to(self.device))
-        
-        batch["depth"].copy_(
-                            torch.stack(depth_obs, dim=0)
-                            .unsqueeze(dim=3)
-                            .to(device=self.device)
-                            .to(dtype=torch.float)
-                            )
-
         rollouts.insert(
             batch,
             recurrent_hidden_states,
