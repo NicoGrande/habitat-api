@@ -420,8 +420,8 @@ class DDPPOTrainer(PPOTrainer):
                     num_rollouts_done_store.set("num_done", "0")
 
                     losses = [
-                        stats[0].item() / self.world_size,
-                        stats[1].item() / self.world_size,
+                        stats[i].item() / self.world_size
+                        for i in range(stats.size(0) - 1)
                     ]
                     deltas = {
                         k: (

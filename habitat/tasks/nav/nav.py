@@ -245,7 +245,7 @@ class PointGoalSensorWithEgoPredictions(PointGoalSensor):
 
         import torch
         self.device = torch.device("cuda", config.MODEL.GPU_ID)
-
+    
         self.ego_model = build_egomotion_estimation_model(
             pretrained_ego_cfg,
             self.device
@@ -314,15 +314,17 @@ class PointGoalSensorWithEgoPredictions(PointGoalSensor):
         # middle of episode
         # update pointgoal using egomotion
         import torch
+
         curr_obs = torch.from_numpy(
             np.asarray(observations["depth"], dtype=np.float32)
         ).permute(2,0,1).unsqueeze(0)
+
         prev_obs = torch.from_numpy(
             np.asarray(self.prev_agent_obs["depth"], dtype=np.float32)
         ).permute(2,0,1).unsqueeze(0)
 
         ego_model_input = torch.cat([prev_obs, curr_obs], 1)
-        ego_model_input =  ego_model_input.to(self.device)
+        ego_model_input = ego_model_input.to(self.device)
         with torch.no_grad():
             feats = self.ego_model.cnn(ego_model_input)
             egomotion_preds = self.ego_model.regressor(feats)[0]
@@ -385,7 +387,7 @@ class PointGoalSensorWithEgoPredictions(PointGoalSensor):
                     [-direction_vector_agent[2], direction_vector_agent[0]],
                     dtype=np.float32,
                 )
-        
+
         return direction_vector_agent
 
 @registry.register_sensor

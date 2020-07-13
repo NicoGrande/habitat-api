@@ -181,11 +181,18 @@ class VIBCompleteLayer(VIBLayer):
         embed_pg = self.predicted_embed(_to_mag_and_unit_vec(pg.detach()))
 
         if AuxLosses.is_active():
-            AuxLosses.register_loss(
-                "egomotion_error",
-                torch.norm(pg - obs["pointgoal_with_gps"], dim=-1).mean(),
-                0.0,
-            )
+            if self.use_odometry:
+                AuxLosses.register_loss(
+                    "egomotion_error",
+                    torch.norm(pg - obs["pointgoal_with_gps_compass"], dim=-1).mean(),
+                    0.0,
+                )
+            else:
+                AuxLosses.register_loss(
+                    "egomotion_error",
+                    torch.norm(pg - obs["pointgoal_with_gps"], dim=-1).mean(),
+                    0.0,
+                )
             AuxLosses.register_loss(
                 "compass_loss",
                 _subsampled_mean(_angular_distance_loss(compass, obs["compass"])),
