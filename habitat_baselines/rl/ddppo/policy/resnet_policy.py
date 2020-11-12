@@ -74,7 +74,7 @@ def _subsampled_mean(x, p=0.2):
 
 
 class VIBLayer(nn.Module):
-    def __init__(self, state_size, output_size, use_info_bot=True, beta=1e-6):
+    def __init__(self, state_size, output_size, use_info_bot=True, use_odometry=False, beta=1e-6):
         super().__init__()
 
         self.priv_embed = nn.Linear(3, 32)
@@ -88,10 +88,16 @@ class VIBLayer(nn.Module):
         self.register_buffer("beta", torch.tensor(beta))
         self.output_size = output_size
         self.use_info_bot = use_info_bot
+        self.use_odometry = use_odometry
 
     def forward(self, s, obs):
         if "pointgoal_with_gps" not in obs:
             return self.prior(s).sample()
+        
+        if self.use_odometry:
+            privileged_info = obs["pointgoal_with_gps_compass"]
+        else:
+            privileged_info = obs["pointgoal_with_gps"]
 
         mu, sigma = torch.chunk(
             self.encoder(
@@ -99,7 +105,7 @@ class VIBLayer(nn.Module):
                     [
                         s,
                         self.priv_embed(
-                            _to_mag_and_unit_vec(obs["pointgoal_with_gps"])
+                            _to_mag_and_unit_vec(privileged_info)
                         ),
                     ],
                     -1,
@@ -147,7 +153,7 @@ class VIBLayer(nn.Module):
 
 class VIBCompleteLayer(VIBLayer):
     def __init__(self, state_size, output_size, use_info_bot=True, use_odometry=False, beta=1e-6):
-        super().__init__(state_size, output_size, use_info_bot, beta)
+        super().__init__(state_size, output_size, use_info_bot, use_odometry, beta)
 
         self.gps_head = nn.Sequential(
             nn.Linear(state_size, state_size // 2),
@@ -176,7 +182,7 @@ class VIBCompleteLayer(VIBLayer):
         if self.use_odometry:
             pg = obs['pointgoal_with_egomotion_prediciton']
         else:
-            pg = _update_pg_gps(obs["pointgoal"], gps)
+            pg = _update_pg_gps_compass(obs["pointgoal"], gps, compass)
 
         embed_pg = self.predicted_embed(_to_mag_and_unit_vec(pg.detach()))
 
@@ -190,7 +196,7 @@ class VIBCompleteLayer(VIBLayer):
             else:
                 AuxLosses.register_loss(
                     "egomotion_error",
-                    torch.norm(pg - obs["pointgoal_with_gps"], dim=-1).mean(),
+                    torch.norm(pg - obs["pointgoal_with_gps_compass"], dim=-1).mean(),
                     0.0,
                 )
             AuxLosses.register_loss(
@@ -683,6 +689,8 @@ class PointNavResNetNet(Net):
         visual_features = self.compression(visual_features)
 
         visual_emb = self.visual_fc(visual_features)
+	
+	    # difference of frames (unit 1)
         flow_emb = self.visual_flow_encoder(
             (visual_features - self.compression(prev_visual_features))
             * masks.view(-1, 1, 1, 1)

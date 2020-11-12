@@ -160,7 +160,8 @@ class DDPPOTrainer(PPOTrainer):
         self.config.defrost()
         self.config.TORCH_GPU_ID = self.local_rank
         self.config.SIMULATOR_GPU_ID = self.local_rank
-        self.config.TASK_CONFIG.TASK.POINTGOAL_WITH_EGO_PREDICTION_SENSOR.MODEL.GPU_ID = self.local_rank
+        if self.config.RL.PPO.use_odometry:
+            self.config.TASK_CONFIG.TASK.POINTGOAL_WITH_EGO_PREDICTION_SENSOR.MODEL.GPU_ID = self.local_rank
         # Multiply by the number of simulators to make sure they also get unique seeds
         self.config.TASK_CONFIG.SEED += (
             self.world_rank * self.config.NUM_PROCESSES

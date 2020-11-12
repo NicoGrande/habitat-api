@@ -323,7 +323,7 @@ class PointGoalSensorWithEgoPredictions(PointGoalSensor):
             np.asarray(self.prev_agent_obs["depth"], dtype=np.float32)
         ).permute(2,0,1).unsqueeze(0)
 
-        ego_model_input = torch.cat([prev_obs, curr_obs], 1)
+        ego_model_input = torch.cat([curr_obs, prev_obs], 1)
         ego_model_input = ego_model_input.to(self.device)
         with torch.no_grad():
             feats = self.ego_model.cnn(ego_model_input)
