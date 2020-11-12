@@ -34,8 +34,7 @@ TASK:
             'GPS_SENSOR', 
             'COMPASS_SENSOR', 
             'POINTGOAL_WITH_GPS_SENSOR', 
-            'POINTGOAL_WITH_GPS_COMPASS_SENSOR', 
-            'NOISY_POINTGOAL_WITH_GPS_COMPASS_SENSOR',
+            'POINTGOAL_WITH_GPS_COMPASS_SENSOR',
             'POINTGOAL_WITH_EGO_PREDICTION_SENSOR']
   POINTGOAL_WITH_GPS_SENSOR:
     GOAL_FORMAT: CARTESIAN
@@ -64,5 +63,5 @@ TASK:
 
 DATASET:
   TYPE: PointNav-v1
-  # DATA_PATH: data/datasets/pointnav/gibson/v2/{split}/{split}.json.gz
-  DATA_PATH: data/datasets/pointnav/gibson/v2/{split}-2plus/{split}.json.gz
+  DATA_PATH: data/datasets/pointnav/gibson/v2/{split}/{split}.json.gz
+  #DATA_PATH: data/datasets/pointnav/gibson/v2/{split}-2plus/{split}.json.gz

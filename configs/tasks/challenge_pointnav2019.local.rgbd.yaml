@@ -43,6 +43,13 @@ TASK:
     GOAL_FORMAT: CARTESIAN
     DIMENSIONALITY: 2
     TYPE: NoisyPointGoalWithGPSCompassSensor
+  POINTGOAL_WITH_EGO_PREDICTION_SENSOR:
+    TYPE: PointGoalSensorWithEgoPredictions
+    GOAL_FORMAT: CARTESIAN
+    MODEL:
+      CONFIG_FILE: /nethome/ggrande3/habitat-api/habitat_baselines/standalone/config/sensors=depth_task=egomotion.yaml
+      GPU_ID: 0
+      CHECKPOINT_PATH: /srv/share2/samyak/habitat-challenge-source/habitat-challenge/agents/pretrained_checkpoints/odometer_rs18_trajDset_360x640.pt
   GOAL_SENSOR_UUID: pointgoal
   MEASUREMENTS: ['DISTANCE_TO_GOAL', "SUCCESS", 'SPL', 'SOFT_SPL']
   SUCCESS:
