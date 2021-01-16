@@ -196,7 +196,7 @@ class VIBCompleteLayer(VIBLayer):
             else:
                 AuxLosses.register_loss(
                     "egomotion_error",
-                    torch.norm(pg - obs["pointgoal_with_gps_compass"], dim=-1).mean(),
+                    torch.norm(pg - obs["pointgoal_with_gps"], dim=-1).mean(),
                     0.0,
                 )
             AuxLosses.register_loss(

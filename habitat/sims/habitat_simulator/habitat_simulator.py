@@ -111,7 +111,7 @@ class HabitatSimDepthSensor(DepthSensor):
     def get_observation(self, sim_obs):
         obs = sim_obs.get(self.uuid, None)
         check_sim_obs(obs, self)
-        obs[obs >= 10.0] = 0.0
+        # obs[obs >= 10.0] = 0.0
         if isinstance(obs, np.ndarray):
             obs = np.clip(obs, self.config.MIN_DEPTH, self.config.MAX_DEPTH)
 
@@ -180,7 +180,7 @@ class HabitatSim(Simulator):
 
         self._sensor_suite = SensorSuite(sim_sensors)
         self.sim_config = self.create_sim_config(self._sensor_suite)
-        self._current_scene = self.sim_config.sim_cfg.scene.id
+        self._current_scene = self.sim_config.sim_cfg.scene_id
         self._sim = habitat_sim.Simulator(self.sim_config)
         self._action_space = spaces.Discrete(
             len(self.sim_config.agents[0].action_space)
@@ -194,7 +194,7 @@ class HabitatSim(Simulator):
         overwrite_config(
             config_from=self.config.HABITAT_SIM_V0, config_to=sim_config
         )
-        sim_config.scene.id = self.config.SCENE
+        sim_config.scene_id = self.config.SCENE
         agent_config = habitat_sim.AgentConfiguration()
         overwrite_config(
             config_from=self._get_agent_config(), config_to=agent_config
